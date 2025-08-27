@@ -42,6 +42,9 @@ Valid options are:
     -s, --ipset <ipset_name>
                 Ipset name for the GfwList domains
                 (If not given, ipset rules will not be generated.)
+    -n, --nftset <nftset_name>
+                Nftset name for the GfwList domains
+                (If not given, nftset rules will not be generated.)
     -o, --output <FILE>
                 /path/to/output_filename
     -i, --insecure
@@ -72,14 +75,14 @@ clean_and_exit(){
 }
 
 check_depends(){
-    which sed base64 mktemp >/dev/null
+    which sed base64 mktemp >/dev/null 2>&1
     if [ $? != 0 ]; then
         _red 'Error: Missing Dependency.\nPlease check whether you have the following binaries on you system:\nwhich, sed, base64, mktemp.\n'
         exit 3
     fi
-    which curl >/dev/null
+    which curl >/dev/null 2>&1
     if [ $? != 0 ]; then
-        which wget >/dev/null
+        which wget >/dev/null 2>&1
         if [ $? != 0 ]; then
             _red 'Error: Missing Dependency.\nEither curl or wget required.\n'
             exit 3
@@ -91,7 +94,7 @@ check_depends(){
 
     SYS_KERNEL=`uname -s`
     if [ $SYS_KERNEL = "Darwin"  -o $SYS_KERNEL = "FreeBSD" ]; then
-        BASE64_DECODE='base64 -D'
+        BASE64_DECODE='base64 -D -i'
         SED_ERES='sed -E'
     else
         BASE64_DECODE='base64 -d'
@@ -104,6 +107,7 @@ get_args(){
     DNS_IP='127.0.0.1'
     DNS_PORT='5353'
     IPSET_NAME=''
+    NFTSET_NAME=''
     FILE_FULLPATH=''
     CURL_EXTARG=''
     WGET_EXTARG=''
@@ -135,6 +139,10 @@ get_args(){
                 ;;
             --ipset | -s)
                 IPSET_NAME="$2"
+                shift
+                ;;
+            --nftset | -n)
+                NFTSET_NAME="$2"
                 shift
                 ;;
             --output | -o)
@@ -200,6 +208,19 @@ get_args(){
                 WITH_IPSET=1
             fi
         fi
+        # Check NFTSET name
+        if [ -z $NFTSET_NAME ]; then
+            WITH_NFTSET=0
+        else
+            NFTSET_TEST=$(echo $NFTSET_NAME | grep -E '^\w+(#\w+)*$')
+            echo $NFTSET_TEST
+            if [ "$NFTSET_TEST" != "$NFTSET_NAME" ]; then
+                _red 'Error: Please enter a valid I set name.\n'
+                exit 1
+            else
+                WITH_NFTSET=1
+            fi
+        fi
     fi
 
     if [ ! -z $EXTRA_DOMAIN_FILE ] && [ ! -f $EXTRA_DOMAIN_FILE ]; then
@@ -215,7 +236,9 @@ get_args(){
 
 process(){
     # Set Global Var
-    BASE_URL='https://github.com/gfwlist/gfwlist/raw/master/gfwlist.txt'
+    if [ -z $GFWLIST_URL ]; then
+      GFWLIST_URL='https://github.com/gfwlist/gfwlist/raw/master/gfwlist.txt'
+    fi
     TMP_DIR=`mktemp -d /tmp/gfwlist2dnsmasq.XXXXXX`
     BASE64_FILE="$TMP_DIR/base64.txt"
     GFWLIST_FILE="$TMP_DIR/gfwlist.txt"
@@ -225,11 +248,12 @@ process(){
     OUT_TMP_FILE="$TMP_DIR/gfwlist.out.tmp"
 
     # Fetch GfwList and decode it into plain text
-    printf 'Fetching GfwList... '
+    printf "Fetching GfwList from $GFWLIST_URL ... \n"
+    printf "You can overwrite gfwlist url via 'export GFWLIST_URL=https://example.com/gfwlist.txt' \n"
     if [ $USE_WGET = 0 ]; then
-        curl -s -L $CURL_EXTARG -o$BASE64_FILE $BASE_URL
+        curl -s -L $CURL_EXTARG -o$BASE64_FILE $GFWLIST_URL
     else
-        wget -q $WGET_EXTARG -O$BASE64_FILE $BASE_URL
+        wget -q $WGET_EXTARG -O$BASE64_FILE $GFWLIST_URL
     fi
     if [ $? != 0 ]; then
         _red '\nFailed to fetch gfwlist.txt. Please check your Internet connection, and check TLS support for curl/wget.\n'
@@ -285,6 +309,10 @@ process(){
             _green 'Ipset rules included.'
             sort -u $DOMAIN_FILE | $SED_ERES 's#(.+)#server=/\1/'$DNS_IP'\#'$DNS_PORT'\
 ipset=/\1/'$IPSET_NAME'#g' > $CONF_TMP_FILE
+        elif [ $WITH_NFTSET -eq 1 ]; then
+            _green 'Nftset rules included.'
+            sort -u $DOMAIN_FILE | $SED_ERES 's@(.+)@server=/\1/'$DNS_IP'\#'$DNS_PORT'\
+nftset=/\1/'$NFTSET_NAME'@g' > $CONF_TMP_FILE
         else
             _green 'Ipset rules not included.'
             sort -u $DOMAIN_FILE | $SED_ERES 's#(.+)#server=/\1/'$DNS_IP'\#'$DNS_PORT'#g' > $CONF_TMP_FILE
