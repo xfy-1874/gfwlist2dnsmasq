@@ -31,21 +31,12 @@ yellow() {
 usage() {
     cat <<-EOF
 
-Name:        gfwlist2dnsmasq.sh
-Desription:  A shell script which convert gfwlist into dnsmasq rules.
-Version:     0.8.0 (2017.12.25)
-Author:      Cokebar Chi
-Website:     https://github.com/cokebar
-
 Usage: sh gfwlist2dnsmasq.sh [options] -o FILE
 Valid options are:
     -d, --dns <dns_ip>
                 DNS IP address for the GfwList Domains (Default: 127.0.0.1)
     -p, --port <dns_port>
                 DNS Port for the GfwList Domains (Default: 5353)
-    -s, --ipset <ipset_name>
-                Ipset name for the GfwList domains
-                (If not given, ipset rules will not be generated.)
     -n, --nftset <nftset_name>
                 Nftset name for the GfwList domains
                 (If not given, nftset rules will not be generated.)
@@ -55,7 +46,7 @@ Valid options are:
                 Force bypass certificate validation (insecure)
     -l, --domain-list
                 Convert Gfwlist into domain list instead of dnsmasq rules
-                (If this option is set, DNS IP/Port & ipset are not needed)
+                (If this option is set, DNS IP/Port & nftset are not needed)
         --exclude-domain-file <FILE>
                 Delete specific domains in the result from a domain list text file
                 Please put one domain per line
@@ -115,12 +106,10 @@ get_args(){
     OUT_TYPE='DNSMASQ_RULES'  # 输出类型：DNSMASQ规则或域名列表
     DNS_IP='127.0.0.1'       # 默认DNS服务器IP
     DNS_PORT='5353'          # 默认DNS端口
-    IPSET_NAME=''            # ipset名称
     NFTSET_NAME=''           # nftset名称
     FILE_FULLPATH=''         # 输出文件完整路径
     CURL_EXTARG=''           # curl额外参数
     WGET_EXTARG=''           # wget额外参数
-    WITH_IPSET=0             # 是否包含ipset规则
     WITH_NFTSET=0            # 是否包含nftset规则
     EXTRA_DOMAIN_FILE=''     # 额外域名文件
     EXCLUDE_DOMAIN_FILE=''   # 排除域名文件
@@ -148,10 +137,6 @@ get_args(){
                 ;;
             --port | -p)
                 DNS_PORT="$2"        # 设置DNS服务器端口
-                shift
-                ;;
-            --ipset | -s)
-                IPSET_NAME="$2"       # 设置ipset名称
                 shift
                 ;;
             --nftset | -n)
@@ -194,7 +179,7 @@ get_args(){
         fi
     fi
 
-    # 当输出类型为DNSMASQ规则时，验证DNS设置和ipset/nftset名称
+    # 当输出类型为DNSMASQ规则时，验证DNS设置和nftset名称
     if [ $OUT_TYPE = 'DNSMASQ_RULES' ]; then
         # 检查DNS IP是否有效
         IPV4_TEST=$(echo $DNS_IP | grep -E $IPV4_PATTERN)
@@ -208,19 +193,6 @@ get_args(){
         if [ $DNS_PORT -lt 1 -o $DNS_PORT -gt 65535 ]; then
             red 'Error: Please enter a valid DNS server port.\n'
             exit 1
-        fi
-
-        # 检查ipset名称是否有效
-        if [ -z $IPSET_NAME ]; then
-            WITH_IPSET=0
-        else
-            IPSET_TEST=$(echo $IPSET_NAME | grep -E '^\w+(,\w+)*$')
-            if [ "$IPSET_TEST" != "$IPSET_NAME" ]; then
-                red 'Error: Please enter a valid IP set name.\n'
-                exit 1
-            else
-                WITH_IPSET=1
-            fi
         fi
         
         # 检查nftset名称是否有效
@@ -327,16 +299,29 @@ process(){
     # 根据输出类型进行相应处理
     if [ $OUT_TYPE = 'DNSMASQ_RULES' ]; then
         # 生成dnsmasq规则
-        if [ $WITH_IPSET -eq 1 ]; then
-            green 'Ipset rules included.'
-            sort -u $DOMAIN_FILE | $SED_ERES 's#(.+)#server=/\1/'$DNS_IP'\#'$DNS_PORT'\
-ipset=/\1/'$IPSET_NAME'#g' > $CONF_TMP_FILE
-        elif [ $WITH_NFTSET -eq 1 ]; then
+        # 将域名分为包含youtube/googlevideo和不包含youtube/googlevideo两类
+        grep -Ei 'youtube|googlevideo' $DOMAIN_FILE > $TMP_DIR/youtube_googlevideo_domains.txt
+        grep -Eiv 'youtube|googlevideo' $DOMAIN_FILE > $TMP_DIR/non_youtube_googlevideo_domains.txt
+        
+        # 创建空的配置文件
+        > $CONF_TMP_FILE
+        
+        if [ $WITH_NFTSET -eq 1 ]; then
             green 'Nftset rules included.'
-            sort -u $DOMAIN_FILE | $SED_ERES 's@(.+)@server=/\1/'$DNS_IP'\#'$DNS_PORT'\
-nftset=/\1/'$NFTSET_NAME'@g' > $CONF_TMP_FILE
+            
+            # 处理非youtube/googlevideo域名
+            if [ -s $TMP_DIR/non_youtube_googlevideo_domains.txt ]; then
+                sort -u $TMP_DIR/non_youtube_googlevideo_domains.txt | $SED_ERES 's@(.+)@server=/\1/'$DNS_IP'\#'$DNS_PORT'\
+nftset=/\1/'$NFTSET_NAME'@g' >> $CONF_TMP_FILE
+            fi
+            
+            # 处理youtube/googlevideo域名
+            if [ -s $TMP_DIR/youtube_googlevideo_domains.txt ]; then
+                sort -u $TMP_DIR/youtube_googlevideo_domains.txt | $SED_ERES 's@(.+)@server=/\1/'$DNS_IP'\#'$DNS_PORT'\
+nftset=/\1/'$NFTSET_NAME'_youtube@g' >> $CONF_TMP_FILE
+            fi
         else
-            green 'Ipset rules not included.'
+            green 'Nftset rules not included.'
             sort -u $DOMAIN_FILE | $SED_ERES 's#(.+)#server=/\1/'$DNS_IP'\#'$DNS_PORT'#g' > $CONF_TMP_FILE
         fi
 
